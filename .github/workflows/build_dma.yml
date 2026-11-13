@@ -1,0 +1,88 @@
+name: Build CaptainDMA 75T Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      vendor_id:
+        description: 'Vendor ID (например, 10EC)'
+        required: true
+        default: '10EC'
+      device_id:
+        description: 'Device ID (например, 8168)'
+        required: true
+        default: '8168'
+      subsys_vendor:
+        description: 'Subsystem Vendor ID (например, 1462)'
+        required: true
+        default: '1462'
+      subsys_id:
+        description: 'Subsystem ID (например, 7C95)'
+        required: true
+        default: '7C95'
+      dsn:
+        description: 'Device Serial Number 16 символов (DSN)'
+        required: true
+        default: '00000001816810EC'
+
+jobs:
+  build-fpga:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/openxc7/vivado-docker:2023.2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Patch IDs and DSN in Cloud
+        working-directory: CaptainDMA/75t484_x1
+        env:
+          V_ID: ${{ github.event.inputs.vendor_id }}
+          D_ID: ${{ github.event.inputs.device_id }}
+          SV_ID: ${{ github.event.inputs.subsys_vendor }}
+          S_ID: ${{ github.event.inputs.subsys_id }}
+          DSN_VAL: ${{ github.event.inputs.dsn }}
+        run: |
+          python3 -c '
+          import os, re
+          def swap16(h): return h.strip().zfill(4)[2:4] + h.strip().zfill(4)[0:2]
+          v, d, sv, s, dsn = [os.environ[k].upper() for k in ("V_ID", "D_ID", "SV_ID", "S_ID", "DSN_VAL")]
+
+          tcl = "vivado_generate_project_captaindma_75t.tcl"
+          txt = open(tcl).read()
+          txt = re.sub(r"(CONFIG\.Vendor_ID\s*\{)[0-9A-Fa-f]{4}(\})", rf"\g<1>{v}\g<2>", txt)
+          txt = re.sub(r"(CONFIG\.Device_ID\s*\{)[0-9A-Fa-f]{4}(\})", rf"\g<1>{d}\g<2>", txt)
+          txt = re.sub(r"(CONFIG\.Subsystem_Vendor_ID\s*\{)[0-9A-Fa-f]{4}(\})", rf"\g<1>{sv}\g<2>", txt)
+          txt = re.sub(r"(CONFIG\.Subsystem_ID\s*\{)[0-9A-Fa-f]{4}(\})", rf"\g<1>{s}\g<2>", txt)
+          open(tcl, "w").write(txt)
+
+          sv_file = "src/pcileech_pcie_cfg_a7.sv"
+          stxt = open(sv_file).read()
+          stxt = re.sub(r"(rw\[127:64\]\s*<=\s*64\x27h)[0-9A-Fa-f_]+(;)", rf"\g<1>{dsn.zfill(16)}\g<2>", stxt)
+          open(sv_file, "w").write(stxt)
+
+          coe = "ip/pcileech_cfgspace.coe"
+          lines = open(coe).readlines()
+          dw0, dw11 = f"{swap16(d)}{swap16(v)}".lower(), f"{swap16(s)}{swap16(sv)}".lower()
+          idx = 0
+          for i, l in enumerate(lines):
+              cl = l.strip()
+              if re.match(r"^[0-9a-fA-F]{8}[,;]?$", cl):
+                  sep = cl[-1] if cl[-1] in (",", ";") else ""
+                  if idx == 0: lines[i] = f"{dw0}{sep}\n"
+                  elif idx == 11: lines[i] = f"{dw11}{sep}\n"
+                  idx += 1
+          open(coe, "w").writelines(lines)
+          print(f"Patched successfully: {v}:{d} DSN={dsn}")
+          '
+
+      - name: Generate Vivado Project & Build Bitstream
+        working-directory: CaptainDMA/75t484_x1
+        run: |
+          vivado -mode batch -source vivado_generate_project_captaindma_75t.tcl
+          vivado -mode batch -source vivado_build.tcl
+
+      - name: Upload Compiled Firmware (.bin)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Firmware_${{ github.event.inputs.vendor_id }}_${{ github.event.inputs.device_id }}
+          path: CaptainDMA/75t484_x1/**/*.bin
