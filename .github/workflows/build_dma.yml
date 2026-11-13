@@ -28,6 +28,11 @@ jobs:
   build-fpga:
     runs-on: ubuntu-latest
     steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -47,19 +52,27 @@ jobs:
 
           with open("src/pcileech_pcie_cfg_a7.sv", "r") as f: s = f.read()
           s = re.sub(r"(rw\[127:64\]\s*<=\s*64\x27h)[0-9A-Fa-f_]+(;)", rf"\g<1>{dsn}\g<2>", s)
-          with open("src/pcileech_pcie_cfg_a7.sv", "w") as f: f.write(s)
+          with open("src/pcileech_pcie_cfg_a7.sv", "w") as f: s = f.write(s)
           '
 
-      - name: Setup Vivado in Cloud
-        uses: FPGA-Notes/setup-vivado@v1
-        with:
-          version: '2023.2'
-          edition: 'Vivado ML Standard'
-          devices: 'Artix-7'
+      - name: Install Vivado Engine (Artix-7)
+        env:
+          AMD_USER: ${{ secrets.AMD_USER }}
+          AMD_PASS: ${{ secrets.AMD_PASS }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y libtinfo5 libncurses5 expect
+          cat << 'EOF' > install_config.txt
+          Edition=Vivado ML Standard
+          Destination=/opt/Xilinx
+          Modules=Artix-7:1
+          InstallOptions=Acquire device drivers:0,Enable WebTalk for Vivado to send usage statistics to AMD:0
+          EOF
+          echo "Готово к запуску установщика"
 
       - name: Build Bitstream (.bin)
         working-directory: CaptainDMA/75t484_x1
         run: |
+          source /opt/Xilinx/Vivado/*/settings64.sh
           vivado -mode batch -source vivado_generate_project_captaindma_75t.tcl
           vivado -mode batch -source vivado_build.tcl
 
